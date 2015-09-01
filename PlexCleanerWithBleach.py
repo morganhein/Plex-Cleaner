@@ -1,11 +1,17 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+# PlexCleaner With Bleach! refactor by Morgan Hein
+# PlexCleaner based on PlexAutoDelete by Steven4x4 with modifications from others
+# Initial rewrite done by ngovil21 to make the script more cohesive and updated for Plex Home
+# Version 1.8 - Added Profies
+# Version 1.7 - Added options for Shared Users
+# Version 1.1 - Added option dump and load settings from a config file
 
 
 """Summary
 
 Attributes:
-    debug (boolean): Description
+    DEBUG (enum): Global flag for debug verbosity. Options are WARNINGS, INFO, and DEBUG
 """
 
 ## Imports
@@ -24,8 +30,8 @@ except:
     import urllib2
 
 ## Globals
-debug = false
-
+DEBUG = false
+CONFIG_VERSION = 1.8
 
 class Cleaner:
     """A single cleaner that'll remove the extra crud from Plex in one clean sweep!
@@ -41,6 +47,128 @@ class Cleaner:
             config (TYPE): Description
         """
         self.config = config
+        self.plex = Plex(self.config)
+        self.flaggedCount, self.deleteCount, self.moveCount, self.copyCount = 0
+
+    #TODO: This is all wrong, but the concept is there. All this needs to be broken up.
+    def scan():
+        log("----------------------------------------------------------------------------")
+        log("                           Detected Settings")
+        log("----------------------------------------------------------------------------")
+        log("Host: " + Settings['Host'])
+        log("Port: " + Settings['Port'])
+
+        doc_sections = self.plex.getURLX(self.config.settings['Host'] + ":" + Settings['Port'] + "/library/sections/")
+
+        if (not Settings['SectionList']) and doc_sections:
+            for Section in doc_sections.getElementsByTagName("Directory"):
+                if Section.getAttribute("key") not in Settings['IgnoreSections']:
+                    Settings['SectionList'].append(Section.getAttribute("key"))
+
+            Settings['SectionList'].sort(key=int)
+            log("Section List Mode: Auto")
+            log("Operating on sections: " + ','.join(str(x) for x in Settings['SectionList']))
+            log("Skipping Sections: " + ','.join(str(x) for x in Settings['IgnoreSections']))
+
+        else:
+            log("Section List Mode: User-defined")
+            log("Operating on user-defined sections: " + ','.join(str(x) for x in Settings['SectionList']))
+
+        RescannedSections = []
+
+        for Section in Settings['SectionList']:
+            Section = str(Section)
+
+            doc = getURLX(Settings['Host'] + ":" + Settings['Port'] + "/library/sections/" + Section + "/all")
+            deck = getURLX(Settings['Host'] + ":" + Settings['Port'] + "/library/sections/" + Section + "/onDeck")
+
+            if not doc:
+                log("Failed to load Section %s. Skipping..." % Section)
+                continue
+            SectionName = doc.getElementsByTagName("MediaContainer")[0].getAttribute("title1")
+            log("")
+            log("--------- Section " + Section + ": " + SectionName + " -----------------------------------")
+
+            group = doc.getElementsByTagName("MediaContainer")[0].getAttribute("viewGroup")
+            changed = 0
+            if group == "movie":
+                changed = checkMovies(doc, Section)
+            elif group == "show":
+                for DirectoryNode in doc.getElementsByTagName("Directory"):
+                    changed += checkShow(DirectoryNode)
+            if changed > 0 and Settings['trigger_rescan']:
+                log("Triggering rescan...")
+                if getURLX(Settings['Host'] + ":" + Settings['Port'] + "/library/sections/" + Section + "/refresh?deep=1",
+                           parseXML=False):
+                    RescannedSections.append(Section)
+
+    def precheck(func):
+        mediaFile = getLocalPath(mediaFile)
+        def func_wrapper(mediaFile, mediaId, location):
+            if not os.path.isfile(mediaFile):
+                log("[NOT FOUND] " + mediaFile)
+                return False
+            if this.config.test:
+                log("**[FLAGGED] " + mediaFile)
+                self.flaggedCount += 1
+                return False
+            if this.config.similar_files:
+                regex = re.sub("\[", "[[]", os.path.splitext(mediaFile)[0]) + "*"
+                log("Finding files similar to: " + regex)
+                fileList = glob.glob(regex)
+            else:
+                fileList = (mediaFile,)
+            return func(mediaFile, mediaId, location, fileList)
+        return func_wrapper
+
+    @precheck
+    def actionDelete(mediaFile, mediaId = 0, location ="", fileList = None):
+        if self.settings['plex_delete']:
+            try:
+                response = self.plex.delete(mediaId) #TODO Check response for success/failure
+                self.deleteCount += 1
+                log("**[DELETED] " + mediaFile)
+                return True
+            except Exception as e:
+                log("Error deleting file: %s" % e, True)
+                return False
+        else:
+            for deleteFile in filelist:
+                try:
+                    os.remove(deleteFile)
+                    log("**[DELETED] " + deleteFile)
+                except Exception as e:
+                    log("error deleting file: %s" % e, True)
+                    continue
+            self.deleteCount += 1
+            return True
+
+    @precheck
+    def actionMove(file, mediaId = 0, location = "", fileList = None):
+        for f in filelist:
+            try:
+                os.utime(os.path.realpath(f), None)
+                shutil.move(os.path.realpath(f), location)
+                log("**[MOVED] " + f)
+            except Exception as e:
+                log("error moving file: %s" % e)
+                return False
+            if os.path.islink(f):
+                os.unlink(f)
+        self.moveCount += 1
+        return True
+
+    @precheck
+    def actionCopy(mediaFile, mediaId = 0, location = "", fileList):
+        try:
+            for f in fileList:
+                shutil.copy(os.path.realpath(f), location)
+                log("**[COPIED] " + file)
+            self.copyCount += 1
+            return True
+        except Exception as e:
+            log("error copying file: %s" % e, True)
+            return False
 
     # Cleans up orphaned folders in a section that are less than the max_size (in megabytes)
     def cleanUpFolders(section, max_size):
@@ -74,6 +202,26 @@ class Cleaner:
                                         except Exception as e:
                                             log("Unable to delete folder: %s" % e, True)
                                             continue
+
+    def report():
+        #TODO: Placeholder for report code
+        log("")
+        log("----------------------------------------------------------------------------")
+        log("----------------------------------------------------------------------------")
+        log("                Summary -- Script Completed Successfully")
+        log("----------------------------------------------------------------------------")
+        log("")
+        log("  Total File Count      " + str(FileCount)) #TODO: access these via self.plex.fileCount etc.
+        log("  Kept Show Files       " + str(KeptCount))
+        log("  On Deck Files         " + str(OnDeckCount))
+        log("  Deleted Files         " + str(DeleteCount))
+        log("  Moved Files           " + str(MoveCount))
+        log("  Copied Files          " + str(CopyCount))
+        log("  Flagged Files         " + str(FlaggedCount))
+        log("  Rescanned Sections    " + ', '.join(str(x) for x in RescannedSections))
+        log("")
+        log("----------------------------------------------------------------------------")
+        log("----------------------------------------------------------------------------")
 
 
 class Plex:
@@ -197,114 +345,18 @@ class Plex:
                 continue
         return None
 
-    def precheck(func):
-        def func_wrapper(mediaFile, mediaId, location):
-            if not os.path.isfile(mediaFile):
-                log("[NOT FOUND] " + mediaFile)
-                return False
-            if this.config.test:
-                log("**[FLAGGED] " + mediaFile)
-                FlaggedCount += 1 #TODO: replace global
-                return False
-            if this.config.similar_files:
-                regex = re.sub("\[", "[[]", os.path.splitext(mediaFile)[0]) + "*"
-                log("Finding files similar to: " + regex)
-                fileList = glob.glob(regex)
-            else:
-                fileList = (mediaFile,)
-            return func(mediaFile, mediaId, location, fileList)
-        return func_wrapper
+    def deleteFile(mediaId):
+        URL = ("http://" + self.settings['host'] + ":" + self.settings['port'] + "/library/metadata/" + str(mediaId))
+        req = urllib2.Request(URL, None, {"X-Plex-Token": self.settings['token']})
+        req.get_method = lambda: 'DELETE'
+        return urllib2.urlopen(req)
 
-    @precheck
-    def actionDelete(mediaFile, mediaId = 0, location ="", fileList = None):
-        if self.settings['plex_delete']:
-            try:
-                URL = ("http://" + Settings['Host'] + ":" + Settings['Port'] + "/library/metadata/" + str(mediaId))
-                req = urllib2.Request(URL, None, {"X-Plex-Token": Settings['Token']})
-                req.get_method = lambda: 'DELETE'
-                urllib2.urlopen(req)
-                DeleteCount += 1 # TODO: Replace global
-                log("**[DELETED] " + mediaFile)
-                return True
-            except Exception as e:
-                log("Error deleting file: %s" % e, True)
-                return False
-        else:
-            for deleteFile in filelist:
-                try:
-                    os.remove(deleteFile)
-                    log("**[DELETED] " + deleteFile)
-                except Exception as e:
-                    log("error deleting file: %s" % e, True)
-                    continue
-            DeleteCount += 1 #TODO: Replace global
-            return True
-
-    @precheck
-    def actionMove(file, mediaId = 0, location = "", fileList = None):
-        for f in filelist:
-            try:
-                os.utime(os.path.realpath(f), None)
-                shutil.move(os.path.realpath(f), location)
-                log("**[MOVED] " + f)
-            except Exception as e:
-                log("error moving file: %s" % e)
-                return False
-            if os.path.islink(f):
-                os.unlink(f)
-
-    @precheck
-    def actionCopy(mediaFile, mediaId = 0, location = "", fileList):
-        try:
-            for f in fileList:
-                shutil.copy(os.path.realpath(f), location)
-                log("**[COPIED] " + file)
-            CopyCount += 1 #TODO: Come on...
-            return True
-        except Exception as e:
-            log("error copying file: %s" % e, True)
-            return False
-
-    def performAction(file, action, media_id = 0, location = ""):
-        global DeleteCount, MoveCount, CopyCount, FlaggedCount
-
-        file = getLocalPath(file)
-
-        elif action.startswith('m'):
-            for f in filelist:
-                try:
-                    os.utime(os.path.realpath(f), None)
-                    shutil.move(os.path.realpath(f), location)
-                    log("**[MOVED] " + f)
-                except Exception as e:
-                    log("error moving file: %s" % e)
-                    return False
-                if os.path.islink(f):
-                    os.unlink(f)
-            MoveCount += 1
-            return True
-        elif action.startswith('d'):
-            for deleteFile in filelist:
-                try:
-                    os.remove(deleteFile)
-                    log("**[DELETED] " + deleteFile)
-                except Exception as e:
-                    log("error deleting file: %s" % e, True)
-                    continue
-            DeleteCount += 1
-            return True
-        else:
-            log("[FLAGGED] " + file)
-            FlaggedCount += 1
-            return False
-
-    def CheckOnDeck(media_id):
-        global OnDeckCount
+    def checkOnDeck(mediaId):
         if not deck:
             return False
         for DeckVideoNode in deck.getElementsByTagName("Video"):
-            if DeckVideoNode.getAttribute("ratingKey") == str(media_id):
-                OnDeckCount += 1
+            if DeckVideoNode.getAttribute("ratingKey") == str(mediaId):
+                self.onDeckCount += 1
                 return True
         return False
 
@@ -313,8 +365,8 @@ class Plex:
         if view == '':
             view = 0
         view = int(view)
-        ################################################################
-        ###Find number of days between date video was viewed and today
+
+        #Find number of days between date video was viewed and today
         lastViewedAt = VideoNode.getAttribute("lastViewedAt")
         if lastViewedAt == '':
             DaysSinceVideoLastViewed = 0
@@ -322,9 +374,8 @@ class Plex:
             d1 = datetime.datetime.today()
             d2 = datetime.datetime.fromtimestamp(float(lastViewedAt))
             DaysSinceVideoLastViewed = (d1 - d2).days
-        ################################################################
-        ################################################################
-        ###Find number of days between date video was added and today
+
+        #Find number of days between date video was added and today
         addedAt = VideoNode.getAttribute("addedAt")
         if addedAt == '':
             DaysSinceVideoAdded = 0
@@ -332,9 +383,9 @@ class Plex:
             d1 = datetime.datetime.today()
             da2 = datetime.datetime.fromtimestamp(float(addedAt))
             DaysSinceVideoAdded = (d1 - da2).days
-        ################################################################
+
         MediaNode = VideoNode.getElementsByTagName("Media")
-        media_id = VideoNode.getAttribute("ratingKey")
+        mediaId = VideoNode.getAttribute("ratingKey")
         for Media in MediaNode:
             PartNode = Media.getElementsByTagName("Part")
             for Part in PartNode:
@@ -344,7 +395,7 @@ class Plex:
                 else:
                     file = urllib2.unquote(file)
                 return {'view': view, 'DaysSinceVideoAdded': DaysSinceVideoAdded,
-                        'DaysSinceVideoLastViewed': DaysSinceVideoLastViewed, 'file': file, 'media_id': media_id}
+                        'DaysSinceVideoLastViewed': DaysSinceVideoLastViewed, 'file': file, 'media_id': mediaId}
 
     # Movies are all listed on one page
     def checkMovies(doc, section):
@@ -389,6 +440,107 @@ class Plex:
         if cleanup_movie_folders:
             log("Cleaning up orphaned folders less than " + str(minimum_folder_size) + "MB in Section " + section)
             cleanUpFolders(section, minimum_folder_size)
+        return changes
+
+    # Shows have a season pages that need to be navigated
+    # TODO: This needs to be broken up into smaller parts, this is a little nuts
+    def checkShow(showDirectory):
+        global KeptCount
+        global FileCount
+        # Parse all of the episode information from the season pages
+        episodes = {}
+        show_settings = default_settings.copy()
+        show_metadata = getURLX(
+            Settings['Host'] + ":" + Settings['Port'] + '/library/metadata/' + showDirectory.getAttribute('ratingKey'))
+        collections = show_metadata.getElementsByTagName("Collection")
+        for collection in collections:
+            collection_tag = collection.getAttribute('tag')
+            if collection_tag and collection_tag in Settings['Profiles']:
+                show_settings.update(Settings['Profiles'][collection_tag])
+                print("Using profile: " + collection_tag)
+        show = getURLX(Settings['Host'] + ":" + Settings['Port'] + showDirectory.getAttribute('key'))
+        if not show:  # Check if show page is None or empty
+            log("Failed to load show page. Skipping...")
+            return 0
+        media_container = show.getElementsByTagName("MediaContainer")[0]
+        show_id = media_container.getAttribute('key')
+        show_name = media_container.getAttribute('parentTitle')
+        for key in Settings['ShowPreferences']:
+            if (key.lower() in show_name.lower()) or (key == show_id):
+                show_settings.update(Settings['ShowPreferences'][key])
+                break
+        # if action is keep then skip checking
+        if show_settings['action'].startswith('k'):  # If keeping on show just skip checking
+            log("[Keeping] " + show_name)
+            log("")
+            return 0
+        for SeasonDirectoryNode in show.getElementsByTagName("Directory"):  # Each directory is a season
+            if not SeasonDirectoryNode.getAttribute('type') == "season":  # Only process Seasons (skips Specials)
+                continue
+            season_key = SeasonDirectoryNode.getAttribute('key')
+            season_num = str(SeasonDirectoryNode.getAttribute('index'))  # Directory index refers to the season number
+            if season_num.isdigit():
+                season_num = ("%02d" % int(season_num))
+            season = getURLX(Settings['Host'] + ":" + Settings['Port'] + season_key)
+            if not season:
+                continue
+            for VideoNode in season.getElementsByTagName("Video"):
+                episode_num = str(VideoNode.getAttribute('index'))  # Video index refers to the episode number
+                if episode_num.isdigit():  # Check if numeric index
+                    episode_num = ("%03d" % int(episode_num))
+                if episode_num == "":  # if episode_num blank here, then use something else to get order
+                    episode_num = VideoNode.getAttribute('originallyAvailableAt')
+                    if episode_num == "":
+                        episode_num = VideoNode.getAttribute('title')
+                        if episode_num == "":
+                            episode_num = VideoNode.getAttribute('addedAt')
+                title = VideoNode.getAttribute('title')
+                m = getMediaInfo(VideoNode)
+                if show_settings['watched']:
+                    if m['DaysSinceVideoLastViewed'] > m['DaysSinceVideoAdded']:
+                        compareDay = m['DaysSinceVideoAdded']
+                    else:
+                        compareDay = m['DaysSinceVideoLastViewed']
+                else:
+                    compareDay = m['DaysSinceVideoAdded']
+                key = '%sx%s' % (
+                    season_num, episode_num)  # store episode with key based on season number and episode number for sorting
+                episodes[key] = {'season': season_num, 'episode': episode_num, 'title': title, 'view': m['view'],
+                                 'compareDay': compareDay, 'file': m['file'], 'media_id': m['media_id']}
+                FileCount += 1
+        count = 0
+        changes = 0
+        for key in sorted(episodes):
+            ep = episodes[key]
+            onDeck = CheckOnDeck(ep['media_id'])
+            if show_settings['watched']:
+                log("%s - S%sxE%s - %s | Viewed: %d | Days Since Last Viewed: %d | On Deck: %s" % (
+                    show_name, ep['season'], ep['episode'], ep['title'], ep['view'], ep['compareDay'], onDeck))
+                checkWatched = (ep['view'] > 0)
+            else:
+                log("%s - S%sxE%s - %s | Viewed: %d | Days Since Added: %d | On Deck: %s" % (
+                    show_name, ep['season'], ep['episode'], ep['title'], ep['view'], ep['compareDay'], onDeck))
+                checkWatched = True
+            if ((len(episodes) - count) > show_settings['episodes']) or \
+                    (ep['compareDay'] > show_settings[
+                        'maxDays'] > 0):  # if we have more episodes, then check if we can delete the file
+                checkDeck = False
+                if show_settings['onDeck']:
+                    checkDeck = onDeck
+                check = (not show_settings['action'].startswith('k')) and checkWatched and (
+                    ep['compareDay'] >= show_settings['minDays']) and (not checkDeck)
+                if check:
+                    if performAction(file=ep['file'], action=show_settings['action'], media_id=ep['media_id'],
+                                     location=show_settings['location']):
+                        changes += 1
+                else:
+                    log('[Keeping] ' + ep['file'])
+                    KeptCount += 1
+            else:
+                log('[Keeping] ' + ep['file'])
+                KeptCount += 1
+            log("")
+            count += 1
         return changes
 
 
@@ -461,8 +613,7 @@ class Config:
 
     # Load Settings from json into an OrderedDict, with defaults
     def loadSettings(opts):
-        """Summary
-        Loads settings from the opts array with default values where needed.
+        """Loads settings from the opts array with default values where needed.
 
         Args:
             opts (argparser.args): An argparser args object
@@ -474,42 +625,103 @@ class Config:
         settings = OrderedDict()
         settings['host'] = opts.get('Host', '127.0.0.1')
         settings['port'] = opts.get('Port', '32400')
-        settings['section_list'] = opts.get('SectionList', SectionList)
-        settings['ignore_sections'] = opts.get('IgnoreSections', IgnoreSections)
-        settings['log_file'] = opts.get('LogFile', LogFile)
-        settings['trigger_rescan'] = opts.get('trigger_rescan', trigger_rescan)
-        settings['token'] = opts.get('Token', Token)
-        settings['username'] = opts.get('Username', Username)
-        settings['password'] = opts.get('Password', Password)
-        settings['shared'] = opts.get('Shared', Shared)
-        settings['device_name'] = opts.get('DeviceName', DeviceName)
-        settings['remote_mount'] = opts.get('RemoteMount', RemoteMount)
-        settings['local_mount'] = opts.get('LocalMount', LocalMount)
-        settings['plex_delete'] = opts.get('plex_delete', plex_delete)
-        settings['similar_files'] = opts.get('similar_files', similar_files)
-        settings['cleanup_movie_folders'] = opts.get('cleanup_movie_folders', cleanup_movie_folders)
-        settings['minimum_folder_size'] = opts.get('minimum_folder_size', minimum_folder_size)
-        settings['default_episodes'] = opts.get('default_episodes', default_episodes)
-        settings['default_minDays'] = opts.get('default_minDays', default_minDays)
-        settings['default_maxDays'] = opts.get('default_maxDays', default_maxDays)
-        settings['default_action'] = opts.get('default_action', default_action)
-        settings['default_watched'] = opts.get('default_watched', default_watched)
-        settings['default_location'] = opts.get('default_location', default_location)
-        settings['default_onDeck'] = opts.get('default_onDeck', default_onDeck)
-        settings['show_preferences'] = OrderedDict(sorted(opts.get('ShowPreferences', ShowPreferences).items()))
+        settings['section_list'] = opts.get('SectionList', []])
+        settings['ignore_sections'] = opts.get('IgnoreSections', [])
+        settings['log_file'] = opts.get('LogFile', TODOCHANGETHIS)
+        settings['trigger_rescan'] = opts.get('trigger_rescan', False)
+        settings['token'] = opts.get('Token', None)
+        settings['username'] = opts.get('Username', None)
+        settings['password'] = opts.get('Password', None)
+        settings['shared'] = opts.get('Shared', False)
+        settings['device_name'] = opts.get('DeviceName', None)
+        settings['remote_mount'] = opts.get('RemoteMount', None)
+        settings['local_mount'] = opts.get('LocalMount', None)
+        settings['plex_delete'] = opts.get('plex_delete', False)
+        settings['similar_files'] = opts.get('similar_files', True)
+        settings['cleanup_movie_folders'] = opts.get('cleanup_movie_folders', False)
+        settings['minimum_folder_size'] = opts.get('minimum_folder_size', 30)
+        settings['default_episodes'] = opts.get('default_episodes', 0)
+        settings['default_minDays'] = opts.get('default_minDays', 0)
+        settings['default_maxDays'] = opts.get('default_maxDays', 30)
+        settings['default_action'] = opts.get('default_action', 'flag')
+        settings['default_watched'] = opts.get('default_watched', True)
+        settings['default_location'] = opts.get('default_location', None)
+        settings['default_onDeck'] = opts.get('default_onDeck', True)
+        settings['show_preferences'] = OrderedDict(sorted(opts.get('ShowPreferences', {}).items()))
         settings['movie_preferences'] = OrderedDict(sorted(opts.get('MoviePreferences', MoviePreferences).items()))
         settings['profiles'] = OrderedDict(sorted(opts.get('Profiles', Profiles).items()))
         settings['version'] = opts.get('Version', CONFIG_VERSION)
+
+        if not empty(settings['token']):
+            if not empty(settings['username']) and not empty(settings['password']):
+                settings['token'] = getToken(settings['username'], settings['password'])
+                if empty(settings['token']):
+                    log("Error getting token, trying without...", True)
+                elif test:
+                    log("Token: " + Settings['Token'], True)
+                    login = True
+
+        if settings['shared'] and settings['token']:
+            accessToken = getAccessToken(settings['token'])
+            if accessToken:
+                settings['token'] = accessToken
+                if test:
+                    log("Access Token: " + settings['token'], True)
+            else:
+                log("Access Token not found or not a shared account")
+
+        if not Ssttings['host'].startswith("http"):
+            settings['host'] = "http://" + settings['host']
+
+        #TODO: WTF with this
+        default_settings = {'episodes': Settings['default_episodes'],
+                            'minDays': Settings['default_minDays'],
+                            'maxDays': Settings['default_maxDays'],
+                            'action': Settings['default_action'],
+                            'watched': Settings['default_watched'],
+                            'location': Settings['default_location'],
+                            'onDeck': Settings['default_onDeck']
+                            }
+
+        #TODO: Integrate this into the settings
+
+        ## CUSTOMIZED SHOW SETTINGS ##############################################
+        # Customized Settings for certain shows. Use this to override default settings.
+        # Only the settings that are being changed need to be given. The setting will match the default settings above
+        # You can also specify an id instead of the Show Name. The id is the id assigned by Plex to the show
+        # Ex: 'Show Name':{'episodes':3,'watched':True/False,'minDays':,'action':'copy','location':'/path/to/folder'},
+        # Make sure each show is separated by a comma. Use this for TV shows
+        ShowPreferences = {
+            "Show 1": {"episodes": 3, "watched": True, "minDays": 10, "action": "delete", "location": "/path/to/folder",
+                       "onDeck": True, "maxDays": 30},
+            "Show 2": {"episodes": 0, "watched": False, "minDays": 10, "action": "delete", "location": "/path/to/folder",
+                       "onDeck": False, "maxDays": 30},
+            "Show 3": {"action": "keep"},  # This show will skipped
+            "Show Preferences": {}  # Keep this line
+        }
+        # Movie specific settings, settings you would like to apply to movie sections only. These settings will override the default
+        # settings set above. Change the default value here or in the config file. Use this for Movie Libraries.
+        MoviePreferences = {
+            'watched': default_watched,  # Delete only watched episodes
+            'minDays': default_minDays,  # Minimum number of days to keep
+            'action': default_action,  # Action to perform on movie files (delete/move/copy)
+            'location': default_location,  # Location to keep movie files
+            'onDeck': default_onDeck  # Do not delete move if on deck
+        }
+
+        # Profiles allow for customized settings based on Plex Collections. This allows managing of common settings using the Plex Web interface.
+        # First set the Profile here, then add the TV show to the collection in Plex.
+        Profiles = {
+            "Profile 1": {"episodes": 3, "watched": True, "minDays": 10, "action": "delete", "location": "/path/to/folder",
+                          "onDeck": True, "maxDays": 30}
+
         return settings
 
     def dumpSettings(config):
-        """Summary
+        """Dumps a configuration file with default values.
 
         Args:
-            output (TYPE): Description
-
-        Returns:
-            TYPE: Description
+            config (dict): The default values to write to the config file.
         """
         # Remove old settings
         if 'End Preferences' in Settings['ShowPreferences']:
@@ -534,9 +746,6 @@ def log(msg, debug = False):
     Args:
         msg (TYPE): Description
         debug (bool, optional): Description
-
-    Returns:
-        TYPE: Description
     """
     try:
         if LogToFile:
@@ -551,6 +760,9 @@ def log(msg, debug = False):
         print(msg)
     except:
         print("Cannot print message")
+
+def empty(value):
+    return value == None or value == ""
 
 def get_input(prompt = ""):
     if sys.version < 3:
@@ -588,4 +800,5 @@ if __name__ == "__main__":
                         help="Update the config file with new settings from the script and exit")
 
     config = Config(parser.parse_args())
-    plex = Plex(config)
+    cleaner = Cleaner(config)
+    cleaner.run()
