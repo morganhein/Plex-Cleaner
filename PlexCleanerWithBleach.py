@@ -1,18 +1,18 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+"""Does stuff to your Plex library. Use at your own risk.
+TODO: Come on, we can make a better description than this.
+
+Attributes:
+    CONFIG_VERSION (float): Version of the configuration file recommended for this version of script.
+    DEBUG (enum): Global flag for debug verbosity. Options are WARNINGS, INFO, and DEBUG
+"""
 # PlexCleaner With Bleach! refactor by Morgan Hein
 # PlexCleaner based on PlexAutoDelete by Steven4x4 with modifications from others
 # Initial rewrite done by ngovil21 to make the script more cohesive and updated for Plex Home
 # Version 1.8 - Added Profies
 # Version 1.7 - Added options for Shared Users
 # Version 1.1 - Added option dump and load settings from a config file
-
-
-"""Summary
-
-Attributes:
-    DEBUG (enum): Global flag for debug verbosity. Options are WARNINGS, INFO, and DEBUG
-"""
 
 ## Imports
 
@@ -34,31 +34,38 @@ DEBUG = false
 CONFIG_VERSION = 1.8
 
 class Cleaner:
-    """A single cleaner that'll remove the extra crud from Plex in one clean sweep!
+    """A single cleaner that'll remove the extra crud from your library in one clean sweep!
 
     Attributes:
-        config (argparser): Description
+        settings (dict): Dictionary of all settings for this run.
+        server (obj): The server to run library commands from. Decoupled so potentially could be run against another front-end beyond Plex.
     """
 
-    def __init__(self, config):
-        """Summary
+    def __init__(self, server, settings):
+        """Creates a new Cleaner object ready to perform a full sweep.
 
         Args:
-            config (TYPE): Description
+            server (obj): Media server instance, decoupled to allow for other front-ends beyond Plex
+            settings (dict): Description
         """
-        self.config = config
-        self.plex = Plex(self.config)
+        self.settings = settings
+        self.server = server
         self.flaggedCount, self.deleteCount, self.moveCount, self.copyCount = 0
 
     #TODO: This is all wrong, but the concept is there. All this needs to be broken up.
-    def scan():
+    def sweep():
+        """Performs a full sweep of the library, updating/moving/deleting where necessary.
+
+        Returns:
+            urmom: Fully satisfied.
+        """
         log("----------------------------------------------------------------------------")
         log("                           Detected Settings")
         log("----------------------------------------------------------------------------")
         log("Host: " + Settings['Host'])
         log("Port: " + Settings['Port'])
 
-        doc_sections = self.plex.getURLX(self.config.settings['Host'] + ":" + Settings['Port'] + "/library/sections/")
+        doc_sections = self.server.getURLX(self.settings['Host'] + ":" + Settings['Port'] + "/library/sections/")
 
         if (not Settings['SectionList']) and doc_sections:
             for Section in doc_sections.getElementsByTagName("Directory"):
@@ -103,8 +110,23 @@ class Cleaner:
                     RescannedSections.append(Section)
 
     def precheck(func):
+        """Decorator function that looks for the test flag and finds all files in the relevant folder.
+
+        Args:
+            func (func): The function to wrap.
+        """
         mediaFile = getLocalPath(mediaFile)
         def func_wrapper(mediaFile, mediaId, location):
+            """Summary
+
+            Args:
+                mediaFile (TYPE): Description
+                mediaId (TYPE): Description
+                location (TYPE): Description
+
+            Returns:
+                TYPE: Description
+            """
             if not os.path.isfile(mediaFile):
                 log("[NOT FOUND] " + mediaFile)
                 return False
@@ -123,6 +145,17 @@ class Cleaner:
 
     @precheck
     def actionDelete(mediaFile, mediaId = 0, location ="", fileList = None):
+        """Summary
+
+        Args:
+            mediaFile (TYPE): Description
+            mediaId (int, optional): Description
+            location (str, optional): Description
+            fileList (TYPE, optional): Description
+
+        Returns:
+            TYPE: Description
+        """
         if self.settings['plex_delete']:
             try:
                 response = self.plex.delete(mediaId) #TODO Check response for success/failure
@@ -145,6 +178,17 @@ class Cleaner:
 
     @precheck
     def actionMove(file, mediaId = 0, location = "", fileList = None):
+        """Summary
+
+        Args:
+            file (TYPE): Description
+            mediaId (int, optional): Description
+            location (str, optional): Description
+            fileList (TYPE, optional): Description
+
+        Returns:
+            TYPE: Description
+        """
         for f in filelist:
             try:
                 os.utime(os.path.realpath(f), None)
@@ -160,6 +204,7 @@ class Cleaner:
 
     @precheck
     def actionCopy(mediaFile, mediaId = 0, location = "", fileList):
+        """<FRESHLY_INSERTED>"""
         try:
             for f in fileList:
                 shutil.copy(os.path.realpath(f), location)
@@ -229,8 +274,28 @@ class Plex:
 
     def __init__(self, config):
         self.config = config
+        self.token = config['token']
+        if empty(self.token):
+            if empty(settings['token']):
+                if not empty(settings['username']) and not empty(settings['password']):
+                    settings['token'] = getToken(settings['username'], settings['password']) #TODO: Move this into the Plex class if None
+                    if empty(settings['token']):
+                        log("Error getting token, trying without...", True)
+                    elif test:
+                        log("Token: " + Settings['Token'], True)
+                        login = True
 
-    def getToken(user, passw):
+            if not empty(settings['shared']) and not empty(settings['token']):
+                accessToken = getAccessToken(settings['token'])
+                if accessToken:
+                    settings['token'] = accessToken
+                    if test:
+                        log("Access Token: " + settings['token'], True)
+                else:
+                    log("Access Token not found or not a shared account")
+
+
+    def getToken(user, password):
         """Summary
 
         Args:
@@ -243,7 +308,7 @@ class Plex:
         import base64
 
         if sys.version < '3':
-            encode = base64.encodestring('%s:%s' % (user, passw)).replace('\n', '')
+            encode = base64.encodestring('%s:%s' % (user, password)).replace('\n', '')
         else:
             auth = bytes('%s:%s' % (user, passw), 'utf-8')
             encode = base64.b64encode(auth).replace(b'\n', b'')
@@ -398,18 +463,24 @@ class Plex:
                         'DaysSinceVideoLastViewed': DaysSinceVideoLastViewed, 'file': file, 'media_id': mediaId}
 
     # Movies are all listed on one page
-    def checkMovies(doc, section):
-        global FileCount
-        global KeptCount
+    def getMovies(doc, section):
+        """Creates a list of all movies with their metadata
 
+        Args:
+            doc (TYPE): Description
+            section (TYPE): Description
+
+        Returns:
+            TYPE: Description
+        """
         changes = 0
-        movie_settings = default_settings.copy()
-        movie_settings.update(Settings['MoviePreferences'])
-        for VideoNode in doc.getElementsByTagName("Video"):
+        movie_settings = default_settings.copy() #TODO: point this at the correct config location
+        movie_settings.update(Settings['MoviePreferences']) #TODO: point this at the correct config location
+        for vNode in doc.getElementByTagName("Video"):
             title = VideoNode.getAttribute("title")
-            movie_id = VideoNode.getAttribute("ratingKey")
+            movieId = VideoNode.getAttribute("ratingKey")
             m = getMediaInfo(VideoNode)
-            onDeck = CheckOnDeck(movie_id)
+            onDeck = checkOnDeck(movieId)
             if movie_settings['watched']:
                 if m['DaysSinceVideoLastViewed'] > m['DaysSinceVideoAdded']:
                     compareDay = m['DaysSinceVideoAdded']
@@ -441,6 +512,10 @@ class Plex:
             log("Cleaning up orphaned folders less than " + str(minimum_folder_size) + "MB in Section " + section)
             cleanUpFolders(section, minimum_folder_size)
         return changes
+
+    def getShows(showDirectory):
+        pass
+
 
     # Shows have a season pages that need to be navigated
     # TODO: This needs to be broken up into smaller parts, this is a little nuts
@@ -543,9 +618,16 @@ class Plex:
             count += 1
         return changes
 
+    # Crude method to replace a remote path with a local path. Hopefully python properly takes care of file separators.
+    def getLocalPath(file):
+        if Settings['RemoteMount'] and Settings['LocalMount']:
+            if file.startswith(Settings['RemoteMount']):
+                file = os.path.normpath(file.replace(Settings['RemoteMount'], Settings['LocalMount'], 1))
+        return file
+
 
 class Config:
-    """Handles configurations for the cleaner and plex servers with default values."""
+    """Handles configurations for the cleaner and media servers with default values where needed."""
 
     def __init__(self, args):
         """Summary
@@ -556,6 +638,7 @@ class Config:
         Args:
             args (TYPE): Description
         """
+        self.config = None
         parseArgs(args)
         this.args = args
 
@@ -581,7 +664,7 @@ class Config:
         if args.config:
             self.config = args.config
         # If no config file is provided, check if there is a config file in first the user directory, or the current directory.
-        if self.config == "":
+        if empty(self.config):
             print(os.path.join(os.path.expanduser("~"), ".plexcleaner"))
             if os.path.isfile(os.path.join(os.path.expanduser("~"), ".plexcleaner")):
                 self.config = os.path.join(os.path.expanduser("~"), ".plexcleaner")
@@ -608,10 +691,6 @@ class Config:
         else:
             self.settings = loadSettings(Settings)
 
-
-
-
-    # Load Settings from json into an OrderedDict, with defaults
     def loadSettings(opts):
         """Loads settings from the opts array with default values where needed.
 
@@ -621,6 +700,36 @@ class Config:
         Returns:
             OrderedDict: A dictionary of configuration options
         """
+
+        ## CUSTOMIZED SHOW SETTINGS ##############################################
+        # Customized Settings for certain shows. Use this to override default settings.
+        # Only the settings that are being changed need to be given. The setting will match the default settings above
+        # You can also specify an id instead of the Show Name. The id is the id assigned by Plex to the show
+        # Ex: 'Show Name':{'episodes':3,'watched':True/False,'minDays':,'action':'copy','location':'/path/to/folder'},
+        # Make sure each show is separated by a comma. Use this for TV shows
+        ShowPreferences = {
+            "Show 1": {"episodes": 3, "watched": True, "minDays": 10, "action": "delete", "location": "/path/to/folder",
+                       "onDeck": True, "maxDays": 30},
+            "Show 2": {"episodes": 0, "watched": False, "minDays": 10, "action": "delete", "location": "/path/to/folder",
+                       "onDeck": False, "maxDays": 30},
+            "Show 3": {"action": "keep"},  # This show will skipped
+            "Show Preferences": {}  # Keep this line
+        }
+        # Movie specific settings, settings you would like to apply to movie sections only. These settings will override the default
+        # settings set above. Change the default value here or in the config file. Use this for Movie Libraries.
+        MoviePreferences = {
+            'watched': default_watched,  # Delete only watched episodes
+            'minDays': default_minDays,  # Minimum number of days to keep
+            'action': default_action,  # Action to perform on movie files (delete/move/copy)
+            'location': default_location,  # Location to keep movie files
+            'onDeck': default_onDeck  # Do not delete move if on deck
+        }
+
+        # Profiles allow for customized settings based on Plex Collections. This allows managing of common settings using the Plex Web interface.
+        # First set the Profile here, then add the TV show to the collection in Plex.
+        Profiles = {
+            "Profile 1": {"episodes": 3, "watched": True, "minDays": 10, "action": "delete", "location": "/path/to/folder",
+                          "onDeck": True, "maxDays": 30}
 
         settings = OrderedDict()
         settings['host'] = opts.get('Host', '127.0.0.1')
@@ -652,29 +761,10 @@ class Config:
         settings['profiles'] = OrderedDict(sorted(opts.get('Profiles', Profiles).items()))
         settings['version'] = opts.get('Version', CONFIG_VERSION)
 
-        if not empty(settings['token']):
-            if not empty(settings['username']) and not empty(settings['password']):
-                settings['token'] = getToken(settings['username'], settings['password'])
-                if empty(settings['token']):
-                    log("Error getting token, trying without...", True)
-                elif test:
-                    log("Token: " + Settings['Token'], True)
-                    login = True
-
-        if settings['shared'] and settings['token']:
-            accessToken = getAccessToken(settings['token'])
-            if accessToken:
-                settings['token'] = accessToken
-                if test:
-                    log("Access Token: " + settings['token'], True)
-            else:
-                log("Access Token not found or not a shared account")
-
-        if not Ssttings['host'].startswith("http"):
+        if not settings['host'].startswith("http"):
             settings['host'] = "http://" + settings['host']
 
-        #TODO: WTF with this
-        default_settings = {'episodes': Settings['default_episodes'],
+        self.default_settings = {'episodes': Settings['default_episodes'],
                             'minDays': Settings['default_minDays'],
                             'maxDays': Settings['default_maxDays'],
                             'action': Settings['default_action'],
@@ -682,38 +772,6 @@ class Config:
                             'location': Settings['default_location'],
                             'onDeck': Settings['default_onDeck']
                             }
-
-        #TODO: Integrate this into the settings
-
-        ## CUSTOMIZED SHOW SETTINGS ##############################################
-        # Customized Settings for certain shows. Use this to override default settings.
-        # Only the settings that are being changed need to be given. The setting will match the default settings above
-        # You can also specify an id instead of the Show Name. The id is the id assigned by Plex to the show
-        # Ex: 'Show Name':{'episodes':3,'watched':True/False,'minDays':,'action':'copy','location':'/path/to/folder'},
-        # Make sure each show is separated by a comma. Use this for TV shows
-        ShowPreferences = {
-            "Show 1": {"episodes": 3, "watched": True, "minDays": 10, "action": "delete", "location": "/path/to/folder",
-                       "onDeck": True, "maxDays": 30},
-            "Show 2": {"episodes": 0, "watched": False, "minDays": 10, "action": "delete", "location": "/path/to/folder",
-                       "onDeck": False, "maxDays": 30},
-            "Show 3": {"action": "keep"},  # This show will skipped
-            "Show Preferences": {}  # Keep this line
-        }
-        # Movie specific settings, settings you would like to apply to movie sections only. These settings will override the default
-        # settings set above. Change the default value here or in the config file. Use this for Movie Libraries.
-        MoviePreferences = {
-            'watched': default_watched,  # Delete only watched episodes
-            'minDays': default_minDays,  # Minimum number of days to keep
-            'action': default_action,  # Action to perform on movie files (delete/move/copy)
-            'location': default_location,  # Location to keep movie files
-            'onDeck': default_onDeck  # Do not delete move if on deck
-        }
-
-        # Profiles allow for customized settings based on Plex Collections. This allows managing of common settings using the Plex Web interface.
-        # First set the Profile here, then add the TV show to the collection in Plex.
-        Profiles = {
-            "Profile 1": {"episodes": 3, "watched": True, "minDays": 10, "action": "delete", "location": "/path/to/folder",
-                          "onDeck": True, "maxDays": 30}
 
         return settings
 
@@ -770,13 +828,6 @@ def get_input(prompt = ""):
     else:
         return input(prompt)
 
-# Crude method to replace a remote path with a local path. Hopefully python properly takes care of file separators.
-def getLocalPath(file):
-    if Settings['RemoteMount'] and Settings['LocalMount']:
-        if file.startswith(Settings['RemoteMount']):
-            file = os.path.normpath(file.replace(Settings['RemoteMount'], Settings['LocalMount'], 1))
-    return file
-
 # gets the total size of a file in bytes, recursively searches through folders
 def getTotalSize(file):
     total_size = os.path.getsize(file)
@@ -800,5 +851,5 @@ if __name__ == "__main__":
                         help="Update the config file with new settings from the script and exit")
 
     config = Config(parser.parse_args())
-    cleaner = Cleaner(config)
-    cleaner.run()
+    cleaner = Cleaner(Plex(config.settings), config.settings)
+    cleaner.sweep()
